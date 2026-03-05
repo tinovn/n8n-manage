@@ -4,21 +4,14 @@ set -e
 # ============================================================
 # upgrade.sh - Migrate from tinovn/n8n-agent to tinovn/n8n-manage
 #
-# This script runs inside the OLD update-agent.sh flow:
-#   1. update-agent.sh stops n8n-agent
-#   2. update-agent.sh does git pull (gets this file)
-#   3. update-agent.sh runs this upgrade.sh
-#   4. update-agent.sh deletes this file
-#   5. update-agent.sh restarts n8n-agent
-#
-# What this script does:
-#   - Install Node.js 20 if not present
-#   - Backup .env from old agent
-#   - Remove old binary repo
-#   - Clone new source repo (tinovn/n8n-manage)
-#   - npm install + npm run build
-#   - Rewrite systemd service to use node
-#   - Rewrite update-agent.sh for new repo
+# Run standalone: bash upgrade.sh
+# Handles everything in one shot:
+#   - Stop n8n-agent service
+#   - Install/upgrade Node.js 20
+#   - Backup .env, remove old repo, clone new source
+#   - npm install + build
+#   - Rewrite systemd service + update-agent.sh
+#   - Restart n8n-agent with new source
 # ============================================================
 
 APP_DIR="/opt/n8n-agent"
@@ -39,6 +32,10 @@ fi
 
 log "=== Starting migration to n8n-manage ==="
 
+# 0. Stop n8n-agent service
+log "Stopping n8n-agent service..."
+systemctl stop n8n-agent 2>/dev/null || true
+
 # 1. Install or upgrade Node.js to version 20
 NEED_NODE=0
 if ! command -v node &> /dev/null; then
@@ -55,16 +52,13 @@ fi
 
 if [ "$NEED_NODE" -eq 1 ]; then
   log "Installing Node.js ${NODE_VERSION} via NodeSource..."
-  # Remove Ubuntu's nodejs first (no npm included)
   apt remove -y nodejs npm 2>/dev/null || true
-  # Setup NodeSource repo and install
   for i in 1 2 3; do
     curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && break
     log "NodeSource setup attempt $i failed, retrying in 10s..."
     sleep 10
   done
   apt install -y nodejs
-  # Verify npm is available
   if ! command -v npm &> /dev/null; then
     log "ERROR: npm not found after install. NodeSource may have failed."
     log "Falling back to manual npm install..."
@@ -153,6 +147,16 @@ echo "Da cap nhat va khoi dong lai n8n-agent"
 SCRIPT
 chmod +x "$APP_DIR/update-agent.sh"
 
-# 8. Reload systemd
+# 8. Reload systemd and restart service
+log "Reloading systemd and starting n8n-agent..."
 systemctl daemon-reload
-log "=== Migration completed successfully ==="
+systemctl restart n8n-agent
+sleep 3
+
+# 9. Verify
+if systemctl is-active --quiet n8n-agent; then
+  log "=== Migration completed successfully. n8n-agent is running ==="
+else
+  log "=== WARNING: Migration done but n8n-agent failed to start ==="
+  log "Check logs: journalctl -u n8n-agent -n 50"
+fi
