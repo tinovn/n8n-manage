@@ -111,6 +111,26 @@ apt_retry apt-get -qqy update
 apt_retry apt-get -qqy upgrade
 apt_retry apt-get -qqy install dnsutils curl git ca-certificates gnupg lsb-release jq openssl
 
+# ========== 1.5 Tao swap (chong OOM khi build docker/ffmpeg) ==========
+# Build image n8n (RUN apk add ffmpeg) ngon nhieu RAM. Tren VPS < 2GB de bi OOM
+# lam treo ca may (sshd chet). Tao swap de co bo dem, tranh sap khi build.
+SWAP_SIZE="${SWAP_SIZE:-2G}"
+if ! swapon --show 2>/dev/null | grep -q .; then
+  MEM_MB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+  log "RAM=${MEM_MB}MB, chua co swap -> tao swapfile ${SWAP_SIZE}."
+  if fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null; then
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null 2>&1
+    swapon /swapfile 2>/dev/null && log "Da bat swap ${SWAP_SIZE}."
+    grep -q '^/swapfile ' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  else
+    log "WARN: khong tao duoc swapfile, tiep tuc (build co the OOM)."
+  fi
+else
+  log "Da co swap san, bo qua."
+fi
+log_step "Da chuan bi swap"
+
 # ========== 2. Cai Node.js ==========
 step "2. Cai Node.js ${NODE_VERSION}"
 if ! command -v node &> /dev/null; then
