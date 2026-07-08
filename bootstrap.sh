@@ -146,15 +146,15 @@ fi
 chmod +x "$INSTALL_SCRIPT"
 log "install-server.sh da tai ($(wc -l < "$INSTALL_SCRIPT") dong)"
 
-# ---- 3. Tao systemd one-shot ----------------------------------------------
-log "Tao ${SERVICE_NAME}.service"
+# ---- 3. Tao systemd oneshot service + timer OnBootSec ---------------------
+# Dung timer OnBootSec (thay vi WantedBy=multi-user.target) de dam bao service
+# CHAC CHAN chay sau reboot, khong phu thuoc target ordering / cloud-init.
+# Service tu cleanup ca service lan timer khi chay xong (chi cai 1 lan).
+log "Tao ${SERVICE_NAME}.service + .timer"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=n8n-agent one-shot installer (chay 1 lan sau reboot)
-# Chay SAU khi cloud-init hoan tat han (cloud-final.service) de tranh deadlock:
-# install-server.sh goi `cloud-init status --wait`, neu chay song song cloud-final
-# thi hai ben cho lan nhau. Order sau cloud-final -> --wait tra ve ngay.
-After=network-online.target cloud-final.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=${INSTALL_SCRIPT}
 
@@ -162,19 +162,29 @@ ConditionPathExists=${INSTALL_SCRIPT}
 Type=oneshot
 RemainAfterExit=no
 Environment=DEBIAN_FRONTEND=noninteractive
-ExecStart=/bin/bash -c '${INSTALL_SCRIPT} \$(cat ${INSTALL_ARGS}) >> ${LOG_FILE} 2>&1; rc=\$?; systemctl disable ${SERVICE_NAME}.service; rm -f /etc/systemd/system/${SERVICE_NAME}.service ${INSTALL_SCRIPT} ${INSTALL_ARGS}; systemctl daemon-reload; exit \$rc'
+ExecStart=/bin/bash -c '${INSTALL_SCRIPT} \$(cat ${INSTALL_ARGS}) >> ${LOG_FILE} 2>&1; rc=\$?; systemctl disable ${SERVICE_NAME}.timer; rm -f /etc/systemd/system/${SERVICE_NAME}.timer /etc/systemd/system/${SERVICE_NAME}.service ${INSTALL_SCRIPT} ${INSTALL_ARGS}; systemctl daemon-reload; exit \$rc'
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=30min
+EOF
+
+cat > "/etc/systemd/system/${SERVICE_NAME}.timer" <<EOF
+[Unit]
+Description=Kich hoat n8n-agent installer sau khi boot
+
+[Timer]
+OnBootSec=20s
+AccuracySec=1s
+Unit=${SERVICE_NAME}.service
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}.service"
+systemctl enable "${SERVICE_NAME}.timer"
 
-log "Da len lich. Reboot sau 5s..."
+log "Da len lich (timer OnBootSec=20s). Reboot sau 5s..."
 log "Theo doi: journalctl -u ${SERVICE_NAME} -f"
 log "     hoac: tail -f ${LOG_FILE}"
 

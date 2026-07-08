@@ -51,10 +51,10 @@ done
 
 mkdir -p "$(dirname "$LOG_FILE")"
 log_step() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$STEP_LOG"; }
-# Ghi ra stderr; khi chay duoi systemd one-shot stderr da redirect vao $LOG_FILE
-# (ExecStart ... >> $LOG_FILE) nen khong dung `tee` de tranh double. Khi chay
-# truc tiep, ghi bo sung vao $LOG_FILE.
-log()  { local m="[$(date '+%Y-%m-%d %H:%M:%S')] $*"; echo "$m" >&2; [[ -t 2 ]] && echo "$m" >> "$LOG_FILE"; }
+# Ghi ra stderr. Duoi systemd one-shot, ExecStart da `>> $LOG_FILE 2>&1` nen moi
+# output (ke ca apt/npm/docker) vao $LOG_FILE — khong tu `tee` de tranh double.
+# Chay truc tiep: nen redirect thu cong, vd `install-server.sh ... 2>&1 | tee log`.
+log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 step() { log ""; log "==== $* ===="; }
 die()  { log "FATAL: $*"; exit 1; }
 
