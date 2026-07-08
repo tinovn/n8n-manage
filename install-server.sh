@@ -293,6 +293,25 @@ systemctl enable n8n-agent-update.timer
 systemctl start n8n-agent-update.timer
 log_step "Da tao systemd timer auto-update"
 
+# ========== 8.5 Pre-pull docker images ==========
+# Buoc `docker compose up -d --build` (chay trong task install cua agent) rat nang
+# RAM/thoi gian vi phai KEO base image + build ffmpeg. Tren VPS yeu, task co the
+# bi OOM/timeout va chet giua chung -> khong tao duoc container. Pre-pull o day de
+# cac layer FROM da co san (cache), build sau do nhanh va it rui ro hon.
+step "8.5 Pre-pull docker images (giam tai cho buoc install)"
+PREPULL_IMAGES=(
+  "alpine:3.22"
+  "dockerhub.tino.org/library/n8nio/n8n:latest"
+  "dockerhub.tino.org/library/postgres:16"
+  "dockerhub.tino.org/library/redis:7-alpine"
+  "dockerhub.tino.org/library/nocodb/nocodb:latest"
+)
+for img in "${PREPULL_IMAGES[@]}"; do
+  log "docker pull $img"
+  docker pull "$img" >/dev/null 2>&1 || log "WARN: khong pull duoc $img (build se tu keo sau)."
+done
+log_step "Da pre-pull docker images"
+
 # ========== 9. Tu dong goi /api/n8n/install (ep cai, khong cho DNS) ==========
 step "9. Tu dong cai n8n"
 
