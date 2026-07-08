@@ -80,7 +80,8 @@ API_KEY=""; PORT=""; IPS=""
 PASSTHROUGH=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api-key) API_KEY="$2"; shift 2 ;;
+    # --mgmt-key la alias cua --api-key (dong bo voi Hermes / Hostbill template).
+    --api-key|--mgmt-key) API_KEY="$2"; shift 2 ;;
     --port)    PORT="$2"; shift 2 ;;
     --ips)     IPS="$2"; shift 2 ;;
     --domain)  PASSTHROUGH+=(--domain "$2"); shift 2 ;;

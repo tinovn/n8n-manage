@@ -39,7 +39,8 @@ ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api-key) AGENT_API_KEY="$2"; shift 2 ;;
+    # --mgmt-key la alias cua --api-key (dong bo voi Hermes / Hostbill template).
+    --api-key|--mgmt-key) AGENT_API_KEY="$2"; shift 2 ;;
     --port)    PORT="$2"; shift 2 ;;
     --domain)  DOMAIN_ARG="$2"; shift 2 ;;
     --email)   EMAIL="$2"; shift 2 ;;
