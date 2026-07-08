@@ -1,6 +1,17 @@
 #!/bin/bash
+# =============================================================================
+# n8n-agent VPS installer — cai dat agent NestJS + tu dong cai n8n
+#
+# Usage:
+#   install-server.sh [--api-key KEY] [--port PORT] [--domain FQDN] \
+#                     [--email EMAIL] [--ref GIT_REF]
+#
+# Cac gia tri co the truyen qua flag HOAC bien moi truong (flag uu tien).
+# Neu bootstrap.sh da pre-seed /opt/n8n-agent/.env thi cac gia tri do duoc
+# doc lai o buoc 5.5 va KHONG bi rotate.
+# =============================================================================
 
-set -e
+set -euo pipefail
 
 # ========== CẤU HÌNH ==========
 APP_DIR="/opt/n8n-agent"
@@ -8,36 +19,109 @@ GIT_REPO="https://github.com/tinovn/n8n-manage.git"
 UPDATE_SCRIPT="$APP_DIR/update-agent.sh"
 UPGRADE_SCRIPT="$APP_DIR/upgrade.sh"
 STEP_LOG="/var/log/n8n-agent-install-steps.log"
-EMAIL="noreply@tino.org"
+LOG_FILE="/var/log/n8n-agent-install.log"
 NODE_VERSION="20"
+export DEBIAN_FRONTEND=noninteractive
 
-log_step() {
-  echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$STEP_LOG"
+# ========== THAM SO / BIEN MOI TRUONG ==========
+# Gia tri co the truyen qua flag hoac bien moi truong (flag uu tien hon).
+# Neu bootstrap.sh da pre-seed /opt/n8n-agent/.env thi cac gia tri do se duoc
+# doc lai o buoc 5.5 va KHONG bi ghi de (khong rotate).
+#
+# Usage: install-server.sh [--api-key KEY] [--port PORT] [--domain FQDN] \
+#                          [--email EMAIL] [--ref GIT_REF]
+AGENT_API_KEY="${AGENT_API_KEY:-}"
+PORT="${PORT:-7071}"
+DOMAIN_ARG="${DOMAIN:-}"
+EMAIL="${EMAIL:-noreply@tino.org}"
+GIT_REF="${GIT_REF:-main}"
+ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --api-key) AGENT_API_KEY="$2"; shift 2 ;;
+    --port)    PORT="$2"; shift 2 ;;
+    --domain)  DOMAIN_ARG="$2"; shift 2 ;;
+    --email)   EMAIL="$2"; shift 2 ;;
+    --ref)     GIT_REF="$2"; shift 2 ;;
+    *)         shift ;;
+  esac
+done
+
+mkdir -p "$(dirname "$LOG_FILE")"
+log_step() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$STEP_LOG"; }
+log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE" >&2; }
+step() { log ""; log "==== $* ===="; }
+die()  { log "FATAL: $*"; exit 1; }
+
+# ---- apt-lock handling (VPS moi hay bi unattended-upgrades giu lock) ----
+is_apt_locked() {
+  fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null
+}
+wait_for_apt() {
+  local max=180 waited=0
+  while [[ $waited -lt $max ]]; do
+    is_apt_locked || return 0
+    log "apt dang bi lock, cho 5s (${waited}s/${max}s)..."
+    sleep 5; waited=$((waited + 5))
+  done
+  log "WARN: apt van lock sau ${max}s, ep giai phong."
+  killall -9 apt apt-get dpkg unattended-upgr 2>/dev/null || true
+  rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+  dpkg --force-confdef --force-confold --configure -a 2>/dev/null || true
+}
+apt_retry() {
+  local retries=3 i=0
+  while [[ $i -lt $retries ]]; do
+    wait_for_apt
+    if "$@"; then return 0; fi
+    i=$((i + 1))
+    log "apt retry ${i}/${retries}: don lock + cau hinh lai dpkg..."
+    killall -9 apt apt-get dpkg 2>/dev/null || true
+    rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+    dpkg --force-confdef --force-confold --configure -a 2>/dev/null || true
+    sleep 5
+  done
+  die "apt that bai sau ${retries} lan: $*"
 }
 
-echo "Bat dau cai dat n8n-agent server..."
+log "=== Bat dau cai dat n8n-agent server ==="
+[[ "$(id -u)" == "0" ]] || die "Phai chay bang root."
 
 # ========== 1. Cap nhat he thong ==========
-echo "Dang cap nhat he thong..."
-apt update && apt upgrade -y
-apt install -y dnsutils curl git ca-certificates gnupg lsb-release jq
+step "1. Cap nhat he thong + xu ly apt-lock"
+
+# Tam dung unattended-upgrades de tranh tranh chap apt-lock ngay sau reboot.
+systemctl stop unattended-upgrades 2>/dev/null || true
+systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+# Cho cloud-init xong (VPS moi provision). Ma thoat 2 = warning, van coi la OK.
+if command -v cloud-init &>/dev/null; then
+  log "Cho cloud-init hoan tat..."
+  set +e; cloud-init status --wait >/dev/null 2>&1; ci_rc=$?; set -e
+  case "$ci_rc" in 0|2) log "cloud-init xong (exit=$ci_rc)." ;; *) log "WARN: cloud-init exit $ci_rc, tiep tuc." ;; esac
+fi
+
+apt_retry apt-get -qqy update
+apt_retry apt-get -qqy upgrade
+apt_retry apt-get -qqy install dnsutils curl git ca-certificates gnupg lsb-release jq openssl
 
 # ========== 2. Cai Node.js ==========
-echo "Cai Node.js ${NODE_VERSION}..."
+step "2. Cai Node.js ${NODE_VERSION}"
 if ! command -v node &> /dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
-  apt install -y nodejs
+  apt_retry apt-get -qqy install nodejs
 fi
 log_step "Da cai Node.js $(node -v)"
 
 # ========== 3. Cai Docker & Compose ==========
-echo "Cai Docker & Docker Compose Plugin..."
+step "3. Cai Docker & Docker Compose Plugin"
 if ! command -v docker &> /dev/null; then
   mkdir -p /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-  apt update
-  apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt_retry apt-get -qqy update
+  apt_retry apt-get -qqy install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
 systemctl enable docker
@@ -45,20 +129,72 @@ systemctl start docker
 log_step "Da cai Docker"
 
 # ========== 4. Cai Nginx & Certbot ==========
-echo "Cai Nginx va Certbot..."
-apt install -y nginx certbot python3-certbot-nginx
+step "4. Cai Nginx va Certbot"
+apt_retry apt-get -qqy install nginx certbot python3-certbot-nginx
 systemctl enable nginx
 systemctl start nginx
 log_step "Da cai Nginx va Certbot"
 
 # ========== 5. Clone agent va build ==========
-echo "Clone n8n-agent tu GitHub..."
+echo "Clone n8n-agent tu GitHub (ref: ${GIT_REF})..."
+# Bao toan .env do bootstrap.sh pre-seed truoc khi xoa thu muc de clone lai.
+PRESEEDED_ENV=""
+if [ -f "$APP_DIR/.env" ]; then
+  PRESEEDED_ENV="$(mktemp)"
+  cp "$APP_DIR/.env" "$PRESEEDED_ENV"
+fi
+
 rm -rf "$APP_DIR"
 git clone "$GIT_REPO" "$APP_DIR"
 cd "$APP_DIR"
+git checkout "$GIT_REF" 2>/dev/null || echo "Khong checkout duoc ref '${GIT_REF}', dung mac dinh."
+
+# Khoi phuc .env da pre-seed (neu co).
+if [ -n "$PRESEEDED_ENV" ]; then
+  cp "$PRESEEDED_ENV" "$APP_DIR/.env"
+  rm -f "$PRESEEDED_ENV"
+fi
+
 npm install
 npm run build
 log_step "Da clone va build n8n-agent"
+
+# ========== 5.5 Tao/cap nhat .env cho agent ==========
+echo "Chuan bi file .env cho agent..."
+ENV_FILE="$APP_DIR/.env"
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+# Doc lai gia tri da co trong .env (uu tien) de khong rotate key khi cai lai.
+existing_env() { grep "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d '=' -f2-; }
+API_FROM_ENV="$(existing_env AGENT_API_KEY)"
+PORT_FROM_ENV="$(existing_env PORT)"
+IPS_FROM_ENV="$(existing_env ALLOWED_IP_RANGES)"
+
+# Thu tu uu tien: gia tri trong .env > flag/bien moi truong > mac dinh.
+[ -n "$API_FROM_ENV" ] && AGENT_API_KEY="$API_FROM_ENV"
+[ -n "$PORT_FROM_ENV" ] && PORT="$PORT_FROM_ENV"
+[ -n "$IPS_FROM_ENV" ] && ALLOWED_IP_RANGES="$IPS_FROM_ENV"
+
+# Sinh API key ngau nhien neu chua co.
+if [ -z "$AGENT_API_KEY" ]; then
+  AGENT_API_KEY="$(openssl rand -hex 32)"
+  echo "Da sinh AGENT_API_KEY ngau nhien."
+fi
+
+# Ghi lai .env (idempotent).
+upsert_env() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+  fi
+}
+upsert_env PORT "$PORT"
+upsert_env AGENT_API_KEY "$AGENT_API_KEY"
+[ -n "$ALLOWED_IP_RANGES" ] && upsert_env ALLOWED_IP_RANGES "$ALLOWED_IP_RANGES"
+log_step "Da chuan bi .env (PORT=$PORT)"
 
 # ========== 6. Tao systemd service ==========
 echo "Tao systemd service..."
@@ -149,50 +285,63 @@ systemctl enable n8n-agent-update.timer
 systemctl start n8n-agent-update.timer
 log_step "Da tao systemd timer auto-update"
 
-# ========== 9. Gui request /api/n8n/install neu DNS dung ==========
-echo "Kiem tra DNS hostname tro dung IP de goi API /api/n8n/install"
+# ========== 9. Tu dong goi /api/n8n/install (ep cai, khong cho DNS) ==========
+step "9. Tu dong cai n8n"
 
-sleep 10
-DOMAIN=$(hostname -f)
-SERVER_IP=$(curl -s https://api.ipify.org)
-PORT=7071
-API_KEY=""
+# IP that cua server (uu tien IP public).
+SERVER_IP=$(hostname -I | awk '{print $1}')
+[[ -z "$SERVER_IP" ]] && SERVER_IP=$(curl -sf --max-time 5 https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
 
-# Doc PORT va API_KEY tu .env neu co
-if [ -f "$APP_DIR/.env" ]; then
-  PORT_FROM_ENV=$(grep '^PORT=' "$APP_DIR/.env" | cut -d '=' -f2)
-  [ -n "$PORT_FROM_ENV" ] && PORT="$PORT_FROM_ENV"
-
-  API_FROM_ENV=$(grep '^AGENT_API_KEY=' "$APP_DIR/.env" | cut -d '=' -f2)
-  [ -n "$API_FROM_ENV" ] && API_KEY="$API_FROM_ENV"
+# Do uu tien domain: --domain/DOMAIN > hostname -f (FQDN that) > <ip>.sslip.io.
+# sslip.io luon phan giai ve chinh IP nay -> certbot cap SSL duoc ma khong can DNS.
+if [[ -n "$DOMAIN_ARG" ]]; then
+  DOMAIN="$DOMAIN_ARG"
+  log "Domain (tu flag/env): $DOMAIN"
+else
+  HOSTNAME_FQDN=$(hostname -f 2>/dev/null || hostname)
+  if [[ "$HOSTNAME_FQDN" == *.* && "$HOSTNAME_FQDN" != localhost* ]]; then
+    DOMAIN="$HOSTNAME_FQDN"
+    log "Domain (tu hostname -f): $DOMAIN"
+  else
+    DOMAIN="${SERVER_IP}.sslip.io"
+    log "Domain (sslip.io fallback): $DOMAIN"
+  fi
 fi
 
-SUCCESS=0
-for i in {1..200}; do
-  DOMAIN_IP=$(dig +short A "$DOMAIN" @1.1.1.1 | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
-  if [[ "$DOMAIN_IP" == "$SERVER_IP" ]]; then
-    echo "DNS chinh xac: $DOMAIN -> $DOMAIN_IP"
-    SUCCESS=1
+echo "Chuan bi cai n8n cho domain: $DOMAIN (port agent: $PORT)"
+
+# Cho agent service len (poll /api/n8n/status; localhost duoc bypass API key).
+echo "Cho n8n-agent san sang..."
+AGENT_READY=0
+for i in $(seq 1 30); do
+  if curl -fs -o /dev/null "http://localhost:$PORT/api/n8n/status"; then
+    AGENT_READY=1
+    echo "n8n-agent da san sang (lan thu $i)."
     break
-  else
-    echo "DNS chua dung ($DOMAIN -> $DOMAIN_IP), thu lai lan $i..."
-    sleep 10
   fi
+  sleep 2
 done
 
-systemctl restart n8n-agent
-sleep 15
-if [[ "$SUCCESS" -eq 1 ]]; then
-  echo "Gui request toi: http://localhost:$PORT/api/n8n/install"
-  curl -s -X POST "http://localhost:$PORT/api/n8n/install" \
-    -H "Content-Type: application/json" \
-    -H "tng-api-key: $API_KEY" \
-    -d '{"domain": "'"$DOMAIN"'", "email": "'"$EMAIL"'"}'
-  log_step "Da goi API /api/n8n/install"
-else
-  echo "DNS khong tro dung sau 200 lan thu -> bo qua goi API"
-  log_step "Bo qua goi API vi DNS khong dung"
+if [[ "$AGENT_READY" -ne 1 ]]; then
+  echo "CANH BAO: n8n-agent chua phan hoi sau 60s, van thu goi API install..."
+  log_step "n8n-agent khong phan hoi truoc khi goi install"
 fi
+
+# Canh bao neu DNS chua tro dung (certbot co the cap SSL that bai) nhung KHONG chan.
+DOMAIN_IP=$(dig +short A "$DOMAIN" @1.1.1.1 | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
+  echo "LUU Y: DNS $DOMAIN -> ${DOMAIN_IP:-none} chua khop server IP $SERVER_IP."
+  echo "       Van tien hanh cai; neu SSL that bai hay tro DNS roi goi lai /api/n8n/install."
+  log_step "DNS chua tro dung nhung van ep cai n8n"
+fi
+
+echo "Goi API: http://localhost:$PORT/api/n8n/install"
+curl -s -X POST "http://localhost:$PORT/api/n8n/install" \
+  -H "Content-Type: application/json" \
+  -H "tng-api-key: $AGENT_API_KEY" \
+  -d '{"domain": "'"$DOMAIN"'", "email": "'"$EMAIL"'"}'
+echo ""
+log_step "Da goi API /api/n8n/install cho $DOMAIN"
 
 # ========== 10. Ket thuc ==========
 echo "Cai dat hoan tat!"

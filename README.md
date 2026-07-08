@@ -6,16 +6,53 @@ Built with [NestJS](https://nestjs.com/) + TypeScript.
 
 ## Quick Install (VPS)
 
+### Option A — Bootstrap (recommended for fresh VPS / Hostbill provisioning)
+
+Waits for `cloud-init`, pre-seeds `.env`, **reboots**, then auto-runs the installer via a systemd one-shot. Survives short SSH timeouts (detaches itself), so it's safe to fire from Hostbill or any remote provisioner.
+
 ```bash
-curl -sL https://raw.githubusercontent.com/tinovn/n8n-manage/main/install-server.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tinovn/n8n-manage/main/bootstrap.sh | \
+  bash -s -- --api-key <KEY> --domain n8n.example.com --email admin@example.com
 ```
 
-Script will automatically:
-- Install Node.js 20, Docker, Nginx, Certbot
-- Clone repo, `npm install`, `npm run build`
-- Create systemd service (`n8n-agent`)
-- Create auto-update timer (updates on reboot)
-- If hostname DNS resolves correctly, auto-call `/api/n8n/install`
+Flags (all optional):
+
+| Flag | Goes to | Default |
+|------|---------|---------|
+| `--api-key <KEY>` | `AGENT_API_KEY` in `.env` | auto-generated (`openssl rand -hex 32`) |
+| `--port <PORT>` | `PORT` in `.env` | `7071` |
+| `--ips <CIDR,CIDR>` | `ALLOWED_IP_RANGES` in `.env` | (none) |
+| `--domain <FQDN>` | n8n domain | `hostname -f`, else `<ip>.sslip.io` |
+| `--email <EMAIL>` | Let's Encrypt email | `noreply@tino.org` |
+| `--ref <git-ref>` | branch/tag/SHA to install | `main` |
+
+Monitor progress:
+
+```bash
+journalctl -u n8n-agent-install -f      # after reboot
+tail -f /var/log/n8n-agent-install.log  # before + after reboot
+```
+
+### Option B — Install directly (no reboot)
+
+Runs the full install in the current session. Same flags as bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tinovn/n8n-manage/main/install-server.sh | \
+  bash -s -- --api-key <KEY> --domain n8n.example.com --email admin@example.com
+```
+
+### What the installer does
+
+- Waits for `cloud-init`, handles apt-locks (retries + force-release)
+- Installs Node.js 20, Docker + Compose, Nginx, Certbot
+- Clones repo at `--ref`, `npm install`, `npm run build` (preserves any pre-seeded `.env`)
+- Writes `.env` (generates `AGENT_API_KEY` if none), creates systemd service (`n8n-agent`)
+- Creates auto-update timer (updates on reboot)
+- **Force-installs n8n** by calling `/api/n8n/install` — no longer waits for DNS.
+  If no real domain is given, falls back to `<ip>.sslip.io` so SSL still works.
+  If your domain's DNS isn't pointed at the server yet, it logs a warning and proceeds
+  anyway; re-point DNS then call `/api/n8n/install` again if SSL failed.
 
 ## Local Development
 
@@ -190,6 +227,9 @@ npm run start:dev    # Run with hot reload
 ## Project Structure
 
 ```
+bootstrap.sh                         # Fresh-VPS bootstrap: pre-seed .env, reboot, one-shot install
+install-server.sh                    # Full installer (Node/Docker/Nginx + build + force-install n8n)
+upgrade.sh                           # Migration hook, run once by update-agent.sh then removed
 src/
 ├── main.ts                          # Bootstrap, guards, CORS
 ├── app.module.ts                    # Root module
