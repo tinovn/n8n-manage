@@ -35,7 +35,9 @@ PORT="${PORT:-7071}"
 DOMAIN_ARG="${DOMAIN:-}"
 EMAIL="${EMAIL:-noreply@tino.org}"
 GIT_REF="${GIT_REF:-main}"
-ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+# IP mac dinh duoc phep goi API (ngoai localhost). Guard cung hard-code san cac
+# IP nay, ghi vao .env de de audit/sua. Truyen --ips de bo sung/thay the.
+ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-103.130.216.5,127.0.0.1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --port)    PORT="$2"; shift 2 ;;
     --domain)  DOMAIN_ARG="$2"; shift 2 ;;
     --email)   EMAIL="$2"; shift 2 ;;
+    --ips)     ALLOWED_IP_RANGES="$2"; shift 2 ;;
     --ref)     GIT_REF="$2"; shift 2 ;;
     *)         shift ;;
   esac
@@ -168,15 +171,18 @@ touch "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 # Doc lai gia tri da co trong .env (uu tien) de khong rotate key khi cai lai.
-existing_env() { grep "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d '=' -f2-; }
+# `|| true` de grep khong khop (file rong) khong giet script duoi `set -e`.
+existing_env() { grep "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d '=' -f2- || true; }
 API_FROM_ENV="$(existing_env AGENT_API_KEY)"
 PORT_FROM_ENV="$(existing_env PORT)"
 IPS_FROM_ENV="$(existing_env ALLOWED_IP_RANGES)"
 
 # Thu tu uu tien: gia tri trong .env > flag/bien moi truong > mac dinh.
-[ -n "$API_FROM_ENV" ] && AGENT_API_KEY="$API_FROM_ENV"
-[ -n "$PORT_FROM_ENV" ] && PORT="$PORT_FROM_ENV"
-[ -n "$IPS_FROM_ENV" ] && ALLOWED_IP_RANGES="$IPS_FROM_ENV"
+# Dung `if` (khong dung `[ -n x ] && cmd`) vi duoi `set -e`, bieu thuc test tra
+# exit 1 khi rong se giet script.
+if [ -n "$API_FROM_ENV" ]; then AGENT_API_KEY="$API_FROM_ENV"; fi
+if [ -n "$PORT_FROM_ENV" ]; then PORT="$PORT_FROM_ENV"; fi
+if [ -n "$IPS_FROM_ENV" ]; then ALLOWED_IP_RANGES="$IPS_FROM_ENV"; fi
 
 # Sinh API key ngau nhien neu chua co.
 if [ -z "$AGENT_API_KEY" ]; then
@@ -195,7 +201,7 @@ upsert_env() {
 }
 upsert_env PORT "$PORT"
 upsert_env AGENT_API_KEY "$AGENT_API_KEY"
-[ -n "$ALLOWED_IP_RANGES" ] && upsert_env ALLOWED_IP_RANGES "$ALLOWED_IP_RANGES"
+if [ -n "$ALLOWED_IP_RANGES" ]; then upsert_env ALLOWED_IP_RANGES "$ALLOWED_IP_RANGES"; fi
 log_step "Da chuan bi .env (PORT=$PORT)"
 
 # ========== 6. Tao systemd service ==========
@@ -290,9 +296,11 @@ log_step "Da tao systemd timer auto-update"
 # ========== 9. Tu dong goi /api/n8n/install (ep cai, khong cho DNS) ==========
 step "9. Tu dong cai n8n"
 
-# IP that cua server (uu tien IP public).
-SERVER_IP=$(hostname -I | awk '{print $1}')
-[[ -z "$SERVER_IP" ]] && SERVER_IP=$(curl -sf --max-time 5 https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
+# IP that cua server (uu tien IP public). `|| true` tranh `set -e` giet script.
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+if [[ -z "$SERVER_IP" ]]; then
+  SERVER_IP=$(curl -sf --max-time 5 https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
+fi
 
 # Do uu tien domain: --domain/DOMAIN > hostname -f (FQDN that) > <ip>.sslip.io.
 # sslip.io luon phan giai ve chinh IP nay -> certbot cap SSL duoc ma khong can DNS.
@@ -330,7 +338,8 @@ if [[ "$AGENT_READY" -ne 1 ]]; then
 fi
 
 # Canh bao neu DNS chua tro dung (certbot co the cap SSL that bai) nhung KHONG chan.
-DOMAIN_IP=$(dig +short A "$DOMAIN" @1.1.1.1 | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+# `|| true`: grep khong khop (DNS chua tro) khong duoc giet script duoi `set -e`.
+DOMAIN_IP=$(dig +short A "$DOMAIN" @1.1.1.1 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1 || true)
 if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
   echo "LUU Y: DNS $DOMAIN -> ${DOMAIN_IP:-none} chua khop server IP $SERVER_IP."
   echo "       Van tien hanh cai; neu SSL that bai hay tro DNS roi goi lai /api/n8n/install."
