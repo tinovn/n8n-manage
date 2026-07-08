@@ -67,7 +67,9 @@ fi
 
 mkdir -p "$BOOT_DIR"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] bootstrap: $*" | tee -a "$LOG_FILE" >&2; }
+# Sau khi detach, stdout/stderr da duoc redirect vao $LOG_FILE, nen chi echo ra
+# stderr (tranh double khi dung them `tee -a $LOG_FILE`).
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] bootstrap: $*" >&2; }
 
 log "=== n8n-agent bootstrap bat dau ==="
 
@@ -117,12 +119,17 @@ write_env_key ALLOWED_IP_RANGES "$IPS"
 # cong; duoi `set -euo pipefail` dieu do se giet bootstrap. Bat status rieng va
 # coi ma khong nghiem trong (0/2) la thanh cong.
 if command -v cloud-init &>/dev/null; then
-    log "Cho cloud-init hoan tat..."
-    set +e; cloud-init status --wait >/tmp/ci-wait.log 2>&1; ci_rc=$?; set -e
+    log "Cho cloud-init hoan tat (toi da ${CLOUD_INIT_WAIT:-300}s)..."
+    # Bao boc `timeout` phong khi cloud-init treo (vd DataSourceNoCloud ket).
+    set +e
+    timeout "${CLOUD_INIT_WAIT:-300}" cloud-init status --wait >/tmp/ci-wait.log 2>&1
+    ci_rc=$?
+    set -e
     while IFS= read -r line; do log "cloud-init: $line"; done < /tmp/ci-wait.log
     rm -f /tmp/ci-wait.log
     case "$ci_rc" in
         0|2) log "cloud-init xong (exit=$ci_rc)." ;;
+        124) log "WARN: cloud-init qua ${CLOUD_INIT_WAIT:-300}s chua xong; tiep tuc reboot." ;;
         *)   log "WARN: cloud-init exit $ci_rc; tiep tuc." ;;
     esac
 else
@@ -143,7 +150,10 @@ log "Tao ${SERVICE_NAME}.service"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=n8n-agent one-shot installer (chay 1 lan sau reboot)
-After=network-online.target
+# Chay SAU khi cloud-init hoan tat han (cloud-final.service) de tranh deadlock:
+# install-server.sh goi `cloud-init status --wait`, neu chay song song cloud-final
+# thi hai ben cho lan nhau. Order sau cloud-final -> --wait tra ve ngay.
+After=network-online.target cloud-final.service
 Wants=network-online.target
 ConditionPathExists=${INSTALL_SCRIPT}
 

@@ -50,7 +50,10 @@ done
 
 mkdir -p "$(dirname "$LOG_FILE")"
 log_step() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$STEP_LOG"; }
-log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE" >&2; }
+# Ghi ra stderr; khi chay duoi systemd one-shot stderr da redirect vao $LOG_FILE
+# (ExecStart ... >> $LOG_FILE) nen khong dung `tee` de tranh double. Khi chay
+# truc tiep, ghi bo sung vao $LOG_FILE.
+log()  { local m="[$(date '+%Y-%m-%d %H:%M:%S')] $*"; echo "$m" >&2; [[ -t 2 ]] && echo "$m" >> "$LOG_FILE"; }
 step() { log ""; log "==== $* ===="; }
 die()  { log "FATAL: $*"; exit 1; }
 
@@ -95,12 +98,10 @@ step "1. Cap nhat he thong + xu ly apt-lock"
 systemctl stop unattended-upgrades 2>/dev/null || true
 systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
-# Cho cloud-init xong (VPS moi provision). Ma thoat 2 = warning, van coi la OK.
-if command -v cloud-init &>/dev/null; then
-  log "Cho cloud-init hoan tat..."
-  set +e; cloud-init status --wait >/dev/null 2>&1; ci_rc=$?; set -e
-  case "$ci_rc" in 0|2) log "cloud-init xong (exit=$ci_rc)." ;; *) log "WARN: cloud-init exit $ci_rc, tiep tuc." ;; esac
-fi
+# Khong cho cloud-init o day: install-server.sh chay SAU reboot (do bootstrap.sh
+# len lich), luc do cloud-init cua lan boot dau da xong tu truoc. Goi
+# `cloud-init status --wait` o day se deadlock voi cloud-final.service cua lan
+# boot thu 2. Viec cho cloud-init la nhiem vu cua bootstrap.sh (truoc reboot).
 
 apt_retry apt-get -qqy update
 apt_retry apt-get -qqy upgrade
