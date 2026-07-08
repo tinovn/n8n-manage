@@ -127,6 +127,7 @@ export class N8nService {
       await fs.writeFile(path.join(this.instancePath, 'docker-compose.yml'), composeContent);
       await fs.writeFile(path.join(this.instancePath, '.env'), envContent);
       await this.shellService.execute('docker compose up -d --build', this.instancePath);
+      await this.waitForN8nReady();
       await this.setupNginxAndSSL(domain, email);
       return {
         message: 'Installation completed.',
@@ -164,6 +165,7 @@ export class N8nService {
       await fs.writeFile(path.join(this.instancePath, 'docker-compose.yml'), composeContent);
       await fs.writeFile(path.join(this.instancePath, '.env'), envContent);
       await this.shellService.execute('docker compose up -d --build', this.instancePath);
+      await this.waitForN8nReady();
       await this.setupNginxAndSSL(domain, email);
       return { message: 'Instance reinstalled successfully.' };
     });
@@ -802,7 +804,37 @@ REDIS_PASSWORD=${randomBytes(24).toString('hex')}`;
     }
   }
 
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Cho container n8n san sang truoc khi setup nginx/SSL — `docker compose up -d`
+  // tra ve ngay khi container START, con n8n can them thoi gian chay DB migration.
+  private async waitForN8nReady() {
+    const maxAttempts = Number(process.env.N8N_READY_MAX_ATTEMPTS ?? 60);
+    const delayMs = Number(process.env.N8N_READY_DELAY_MS ?? 5_000);
+    this.logger.log('Waiting for n8n container to become ready...');
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // curl -f: tra exit != 0 neu HTTP >= 400. /healthz la endpoint health cua n8n.
+        await this.shellService.execute('curl -fsS http://127.0.0.1:5678/healthz');
+        this.logger.log(`n8n is ready (attempt ${attempt}/${maxAttempts}).`);
+        return;
+      } catch {
+        if (attempt === maxAttempts) {
+          this.logger.warn(
+            `n8n not ready after ${maxAttempts} attempts; continuing with nginx/SSL anyway.`,
+          );
+          return;
+        }
+        await this.delay(delayMs);
+      }
+    }
+  }
+
   private async setupNginxAndSSL(domain: string, email: string) {
+    // 1. Cau hinh nginx phuc vu HTTP (port 80) truoc — n8n truy cap duoc ngay
+    //    ke ca khi SSL chua cap xong.
     const nginxConfigContent = this.createNginxConfig(domain);
     const nginxConfigPath = `/etc/nginx/sites-available/${domain}`;
     await fs.writeFile(nginxConfigPath, nginxConfigContent);
@@ -819,10 +851,42 @@ REDIS_PASSWORD=${randomBytes(24).toString('hex')}`;
     }
     await this.shellService.execute('nginx -t');
     await this.shellService.execute('systemctl reload nginx');
-    this.logger.log('Nginx reloaded with new site configuration.');
-    const certbotCommand = `certbot --nginx -d ${domain} --non-interactive --agree-tos -m ${email}`;
-    await this.shellService.execute(certbotCommand);
-    this.logger.log(`Certbot has been run for ${domain}. SSL should be active.`);
+    this.logger.log('Nginx reloaded (HTTP is live). Now provisioning SSL...');
+
+    // 2. Cap SSL voi retry — certbot thuong fail khi DNS chua tro dung IP.
+    //    Retry cho toi khi thanh cong hoac het so lan (co the cau hinh qua env).
+    await this.provisionSSLWithRetry(domain, email);
+  }
+
+  private async provisionSSLWithRetry(domain: string, email: string) {
+    const maxRetries = Number(process.env.CERTBOT_MAX_RETRIES ?? 10);
+    const retryDelayMs = Number(process.env.CERTBOT_RETRY_DELAY_MS ?? 30_000);
+    // --keep-until-expiring: idempotent giua cac lan retry (khong cap lai neu da co).
+    const certbotCommand =
+      `certbot --nginx -d ${domain} --non-interactive --agree-tos ` +
+      `--keep-until-expiring --redirect -m ${email}`;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.shellService.execute(certbotCommand);
+        this.logger.log(`SSL provisioned for ${domain} (attempt ${attempt}/${maxRetries}).`);
+        return;
+      } catch (error) {
+        const isLast = attempt === maxRetries;
+        this.logger.warn(
+          `Certbot attempt ${attempt}/${maxRetries} failed for ${domain}: ${error.message}`,
+        );
+        if (isLast) {
+          throw new Error(
+            `SSL provisioning failed after ${maxRetries} attempts for ${domain}. ` +
+              `HTTP is live; point DNS to this server then re-run /api/n8n/install ` +
+              `or certbot manually. Last error: ${error.message}`,
+          );
+        }
+        this.logger.log(`Retrying certbot in ${retryDelayMs / 1000}s...`);
+        await this.delay(retryDelayMs);
+      }
+    }
   }
 
   private async cleanupNginxAndSSL(domain: string) {
