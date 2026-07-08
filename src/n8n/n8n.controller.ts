@@ -118,6 +118,22 @@ export class N8nController {
     }
   }
 
+  @Post('ffmpeg')
+  @HttpCode(HttpStatus.ACCEPTED)
+  installFfmpeg() {
+    try {
+      const taskId = this.n8nService.installFfmpeg();
+      return {
+        statusCode: HttpStatus.ACCEPTED,
+        message: 'ffmpeg installation process has been accepted.',
+        taskId,
+      };
+    } catch (error) {
+      if (error instanceof ConflictException) throw new ConflictException(error.message);
+      throw new InternalServerErrorException(`Failed to initiate ffmpeg install: ${error.message}`);
+    }
+  }
+
   @Post('disable-2fa')
   @HttpCode(HttpStatus.ACCEPTED)
   disable2FA(@Body() disable2faDto: Disable2faDto) {

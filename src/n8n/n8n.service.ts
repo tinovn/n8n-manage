@@ -19,6 +19,9 @@ import { TasksService } from '../tasks/tasks.service';
 import { v4 as uuidv4 } from 'uuid';
 import { ShellService } from '../shell/shell.service';
 
+// Image n8n KHONG build san ffmpeg (RUN apk add ffmpeg rat nang RAM, de OOM tren
+// VPS yeu). Chi copy san `apk` tu alpine stage de sau nay cai ffmpeg on-demand
+// qua POST /api/n8n/ffmpeg (apk add vao container dang chay).
 const DOCKERFILE_INLINE = `FROM alpine:3.22 AS apkstage
 RUN apk add --no-cache apk-tools
 FROM dockerhub.tino.org/library/n8nio/n8n:latest
@@ -27,7 +30,6 @@ COPY --from=apkstage /sbin/apk /sbin/apk
 COPY --from=apkstage /lib /lib/
 COPY --from=apkstage /usr/lib /usr/lib/
 COPY --from=apkstage /etc/apk/ /etc/apk/
-RUN /sbin/apk add --no-cache ffmpeg
 USER node`;
 
 function makeDockerfileInline(version: string): string {
@@ -39,7 +41,6 @@ COPY --from=apkstage /sbin/apk /sbin/apk
 COPY --from=apkstage /lib /lib/
 COPY --from=apkstage /usr/lib /usr/lib/
 COPY --from=apkstage /etc/apk/ /etc/apk/
-RUN /sbin/apk add --no-cache ffmpeg
 USER node`;
 }
 
@@ -259,6 +260,38 @@ export class N8nService {
       return {
         message: 'Instance owner has been reset successfully. You can now create a new owner account.',
       };
+    });
+    return task.id;
+  }
+
+  // Cai ffmpeg on-demand vao container n8n (va worker) dang chay bang `apk add`.
+  // Nhanh, khong rebuild, khong downtime. Luu y: se mat khi container recreate
+  // (vd upgrade/reinstall) — goi lai API nay sau khi recreate.
+  installFfmpeg(): string {
+    this.lockOperation('installFfmpeg');
+    const task = this.tasksService.create('Installing ffmpeg into n8n containers');
+    this.executeInBackground('installFfmpeg', task.id, async () => {
+      await this.checkInstanceExists(true);
+      const results: Record<string, string> = {};
+      // Cai vao ca n8n va n8n-worker. Worker co the khong ton tai -> bo qua loi.
+      for (const service of ['n8n', 'n8n-worker']) {
+        try {
+          this.logger.log(`Installing ffmpeg into '${service}'...`);
+          await this.shellService.execute(
+            `docker compose exec -u root ${service} apk add --no-cache ffmpeg`,
+            this.instancePath,
+          );
+          const { stdout } = await this.shellService.execute(
+            `docker compose exec -u root ${service} ffmpeg -version`,
+            this.instancePath,
+          );
+          results[service] = stdout.split('\n')[0] || 'installed';
+        } catch (error) {
+          this.logger.warn(`ffmpeg install skipped for '${service}': ${error.message}`);
+          results[service] = `skipped: ${error.message}`;
+        }
+      }
+      return { message: 'ffmpeg installation completed.', results };
     });
     return task.id;
   }

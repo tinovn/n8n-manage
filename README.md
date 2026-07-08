@@ -89,6 +89,7 @@ All endpoints are under `/api/n8n`. Authentication via `tng-api-key` header.
 | `PATCH` | `/api/n8n/change-domain` | Change domain |
 | `POST` | `/api/n8n/reset-owner` | Reset instance owner |
 | `POST` | `/api/n8n/disable-2fa` | Disable 2FA for a user |
+| `POST` | `/api/n8n/ffmpeg` | Install ffmpeg into running n8n containers (on-demand) |
 
 ### Version Management
 
@@ -196,9 +197,14 @@ GET  /api/tasks/abc-123 -> { status: "completed", result: { ... } }
 Generated `docker-compose.yml` includes:
 - **postgres** - Database
 - **redis** - Queue backend
-- **n8n** - Main instance (with ffmpeg via `dockerfile_inline`)
-- **n8n-worker** - Queue worker (with ffmpeg)
+- **n8n** - Main instance (`apk` copied in, ffmpeg installed on-demand)
+- **n8n-worker** - Queue worker
 - **nocodb** - NocoDB instance
+
+> **ffmpeg is not baked into the image** — building it (`apk add ffmpeg`) is
+> memory-heavy and can OOM small VPS during install. Install it when needed via
+> `POST /api/n8n/ffmpeg` (runs `apk add ffmpeg` in the running containers).
+> Note: it must be re-run after a container recreate (e.g. upgrade/reinstall).
 
 ### Service Management
 
