@@ -3,7 +3,7 @@
 # n8n-agent Bootstrap — cho cloud-init, pre-seed .env, reboot roi tu cai
 #
 # Luong su dung (Hostbill / SSH one-shot):
-#   ssh root@vps "curl -fsSL https://raw.githubusercontent.com/tinovn/n8n-manage/main/bootstrap.sh | \
+#   ssh root@vps "curl -fsSL https://cdn.jsdelivr.net/gh/tinovn/n8n-manage@main/bootstrap.sh | \
 #     bash -s -- [--api-key <KEY>] [--port <PORT>] [--domain <FQDN>] \
 #                [--email <EMAIL>] [--ips <CIDR,CIDR>] [--ref <GIT_REF>]"
 #
@@ -33,7 +33,13 @@
 
 set -euo pipefail
 
-readonly REPO_RAW="https://raw.githubusercontent.com/tinovn/n8n-manage/main"
+# Dung jsDelivr CDN thay raw.githubusercontent de tranh 429 (raw rate-limit theo
+# dai IP datacenter). jsDelivr mirror GitHub, khong rate-limit kieu do.
+# Luu y: jsDelivr cache @main toi da ~12h. Sau khi push code moi, purge cache:
+#   curl -s https://purge.jsdelivr.net/gh/tinovn/n8n-manage@main/bootstrap.sh
+#   curl -s https://purge.jsdelivr.net/gh/tinovn/n8n-manage@main/install-server.sh
+# Co the ghi de bang bien REPO_RAW khi can (vd ve raw hoac self-host).
+readonly REPO_RAW="${REPO_RAW:-https://cdn.jsdelivr.net/gh/tinovn/n8n-manage@main}"
 readonly BOOT_DIR="/opt/n8n-agent"
 readonly INSTALL_SCRIPT="${BOOT_DIR}/n8n-install.sh"
 readonly INSTALL_ARGS="${BOOT_DIR}/n8n-install.args"
