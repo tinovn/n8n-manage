@@ -1013,13 +1013,26 @@ REDIS_PASSWORD=${randomBytes(24).toString('hex')}`;
       return this.versionCache;
     }
     this.logger.log('Fetching n8n versions from Docker Hub API.');
-    const url =
-      'https://registry.hub.docker.com/v2/repositories/n8nio/n8n/tags?page_size=15';
+    // Nightly tags dominate the newest pages, so paginate via `next` until
+    // enough semver tags are collected (capped to avoid crawling all tags)
+    const semverRegex = /^\d+\.\d+\.\d+$/;
+    const maxPages = 5;
+    const minSemverVersions = 30;
     try {
-      const response = await firstValueFrom(this.httpService.get(url));
-      const tagsData = response.data.results;
+      const tagsData = [];
+      let semverCount = 0;
+      let url: string | null =
+        'https://registry.hub.docker.com/v2/repositories/n8nio/n8n/tags?page_size=100';
+      for (let page = 0; url && page < maxPages; page++) {
+        const response = await firstValueFrom(this.httpService.get(url));
+        const results = response.data.results || [];
+        tagsData.push(...results);
+        semverCount += results.filter((tag) => semverRegex.test(tag.name)).length;
+        if (semverCount >= minSemverVersions) break;
+        url = response.data.next;
+      }
       const allVersions = tagsData
-        .filter((tag) => /^\d+\.\d+\.\d+$/.test(tag.name))
+        .filter((tag) => semverRegex.test(tag.name))
         .map((tag) => {
           const amd64Image = tag.images.find((img) => img.architecture === 'amd64');
           const sizeInBytes = amd64Image ? amd64Image.size : tag.full_size || 0;
