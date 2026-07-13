@@ -35,7 +35,7 @@ USER node`;
 function makeDockerfileInline(version: string): string {
   return `FROM alpine:3.22 AS apkstage
 RUN apk add --no-cache apk-tools
-FROM dockerhub.tino.org/library/n8nio/n8n:${version}
+FROM n8nio/n8n:${version}
 USER root
 COPY --from=apkstage /sbin/apk /sbin/apk
 COPY --from=apkstage /lib /lib/
